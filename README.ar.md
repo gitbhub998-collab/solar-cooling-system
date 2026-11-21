@@ -61,23 +61,24 @@
 | `POST /api/commands` | إرسال سرعة المروحة/الطلمبة للـ ESP32 |
 | `WS /ws` | بث حي للقراءات والحالة والأوامر |
 
-## التشغيل محليًا (٥ دقايق)
+## التشغيل محليًا (١٠ دقايق)
 
 ```bash
-docker compose up          # الوسيط + الباك اند (SQLite)
-# أو من غير دوكر:
-cd backend && npm install && cp .env.example .env && npm start
+# 1. حسابات الوسيط والشهادات (مرة واحدة، شوف broker/README.md)
+# 2. شغّل النظام
+MQTT_PASSWORD=... OPERATOR_TOKEN=... COMMAND_KEY=... docker compose up
 ```
 
-الداشبورد: افتح `index.html` وحط `BACKEND.restUrl = "http://localhost:8080"`
-و `BACKEND.wsUrl = "ws://localhost:8080/ws"`.
+الداشبورد: افتح `index.html` واملى `restUrl` و `wsUrl` و `operatorToken`.
+الخطوات كاملة في [docs/GO-LIVE.md](docs/GO-LIVE.md).
 
 ## النشر مجانًا
 
 1. **الوسيط**: اعمل كلاستر مجاني على HiveMQ Cloud أو EMQX Serverless
    (أو خلي Mosquitto على Raspberry Pi جنب المشروع).
 2. **الباك اند**: Render ← New ← Blueprint ← اختار الريبو — ملف `render.yaml`
-   بيجهز الخدمة وقاعدة Postgres المجانية لوحده؛ املى بس متغيرات MQTT الثلاثة.
+   بيجهز الخدمة وقاعدة Postgres المجانية لوحده؛ املى متغيرات MQTT
+   زائد `OPERATOR_TOKEN` و `COMMAND_KEY`.
 3. **الداشبورد**: جاهزة على GitHub Pages. حط لينك الباك اند في `index.html`
    واعمل كوميت.
 
@@ -102,6 +103,12 @@ Raspberry Pi بأمر `docker compose up`.
 تبريد أسخن، والسلايدرز بتأثر في الحرارة فعلًا)، فتقدر تتمرن على العرض كامل
 قبل ما الهاردوير يشتغل.
 
-## تأمين الوسيط (قبل يوم المناقشة)
+## الأمان (مبني وشغال افتراضيًا)
 
-فعّل TLS (بورت 8883) واسم مستخدم وكلمة سر، وخلي الوسيط العام للتجربة بس.
+- **وسيط خاص**: مفيش دخول مجهول، TLS على 8883، وصلاحيات لكل جهاز — الجهاز
+  ينشر قراءاته بس ويقرا أوامره بس. الإعداد في [broker/README.md](broker/README.md).
+- **توكن المشغّل**: مسار الأوامر `POST /api/commands` محتاج Bearer token.
+- **قفل أمان في الجهاز**: الـ ESP32 يتجاهل أي أمر من غير `COMMAND_KEY`،
+  والمخرجات متظبوطة على حد أقصى (`FAN_MAX_PCT` / `PUMP_MAX_PCT`).
+
+الوسطاء العموميين المفتوحين للتطوير المبدئي بس — أبدًا مش للعرض.

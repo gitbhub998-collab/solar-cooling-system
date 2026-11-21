@@ -8,18 +8,27 @@
 services:
   mosquitto:
     image: eclipse-mosquitto:2
-    ports: ["1883:1883"]
+    ports: ["8883:8883"]
     volumes:
       - ./broker/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./broker/passwords:/mosquitto/config/passwords:ro
+      - ./broker/acl:/mosquitto/config/acl:ro
+      - ./broker/certs:/mosquitto/certs:ro
 
   backend:
     build: ./backend
     ports: ["8080:8080"]
     environment:
-      MQTT_URL: mqtt://mosquitto:1883
+      MQTT_URL: mqtts://mosquitto:8883
+      MQTT_USERNAME: backend
+      MQTT_PASSWORD: ${MQTT_PASSWORD:?set MQTT_PASSWORD in your shell or a .env file}
+      MQTT_CA: /run/secrets/ca.crt
+      OPERATOR_TOKEN: ${OPERATOR_TOKEN:?set OPERATOR_TOKEN in your shell or a .env file}
+      COMMAND_KEY: ${COMMAND_KEY:?set COMMAND_KEY in your shell or a .env file}
       DATABASE_URL: sqlite:///app/data/solarcool.db
     volumes:
       - backend-data:/app/data
+      - ./broker/certs/ca.crt:/run/secrets/ca.crt:ro
     depends_on: [mosquitto]
 
   postgres:
@@ -36,8 +45,15 @@ services:
     profiles: ["pg"]
     ports: ["8080:8080"]
     environment:
-      MQTT_URL: mqtt://mosquitto:1883
+      MQTT_URL: mqtts://mosquitto:8883
+      MQTT_USERNAME: backend
+      MQTT_PASSWORD: ${MQTT_PASSWORD:?set MQTT_PASSWORD in your shell or a .env file}
+      MQTT_CA: /run/secrets/ca.crt
+      OPERATOR_TOKEN: ${OPERATOR_TOKEN:?set OPERATOR_TOKEN in your shell or a .env file}
+      COMMAND_KEY: ${COMMAND_KEY:?set COMMAND_KEY in your shell or a .env file}
       DATABASE_URL: postgres://postgres:solarcool@postgres:5432/solarcool
+    volumes:
+      - ./broker/certs/ca.crt:/run/secrets/ca.crt:ro
     depends_on: [mosquitto, postgres]
 
 volumes:

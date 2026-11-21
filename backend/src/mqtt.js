@@ -15,6 +15,7 @@
  *                                       so a rebooting ESP32 re-applies the last setpoints)
  */
 
+const fs = require('fs');
 const mqtt = require('mqtt');
 const config = require('./config');
 const db = require('./db');
@@ -26,12 +27,18 @@ function start(onEvent) {
   broadcast = onEvent || broadcast;
   const p = config.topicPrefix;
 
-  client = mqtt.connect(config.mqtt.url, {
+  const opts = {
     username: config.mqtt.username,
     password: config.mqtt.password,
     reconnectPeriod: 5000,
     clientId: `solarcool-backend-${Math.random().toString(16).slice(2, 8)}`,
-  });
+  };
+  if (config.mqtt.url.startsWith('mqtts://')) {
+    if (config.mqtt.ca) opts.ca = fs.readFileSync(config.mqtt.ca);
+    opts.rejectUnauthorized = config.mqtt.rejectUnauthorized;
+  }
+
+  client = mqtt.connect(config.mqtt.url, opts);
 
   client.on('connect', () => {
     console.log('MQTT connected:', config.mqtt.url);
@@ -76,10 +83,11 @@ function start(onEvent) {
 
 const api = {
   // Publishes a retained command so the device picks it up even after a reboot.
+  // The key is the device-side interlock: firmware ignores commands without it.
   publishCommand(deviceId, fan, pump, source = 'dashboard') {
     if (!client?.connected) throw new Error('MQTT not connected');
     const topic = `${config.topicPrefix}/${deviceId}/commands`;
-    client.publish(topic, JSON.stringify({ fan, pump }), { retain: true, qos: 1 });
+    client.publish(topic, JSON.stringify({ fan, pump, key: config.commandKey }), { retain: true, qos: 1 });
     return db.logCommand(deviceId, Date.now(), fan, pump, source);
   },
   get connected() { return !!client?.connected; },

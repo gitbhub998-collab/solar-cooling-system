@@ -30,6 +30,7 @@
  */
 
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
 #include <OneWire.h>
@@ -42,11 +43,31 @@
 #define WIFI_SSID      "YOUR_WIFI_NAME"
 #define WIFI_PASSWORD  "YOUR_WIFI_PASSWORD"
 
-// Broker. Use mqtts (8883 + WiFiClientSecure) with a managed broker in production.
-#define MQTT_HOST      "broker.hivemq.com"     // dev public broker; replace with your own
-#define MQTT_PORT      1883
-#define MQTT_USER      ""                   // empty = anonymous
-#define MQTT_PASS      ""
+// Broker. Production: TLS on 8883 with per-device credentials (see broker/README.md).
+#define MQTT_HOST      "your-broker-hostname"   // e.g. the Pi or your HiveMQ Cloud cluster
+#define MQTT_PORT      8883
+#define MQTT_USER      "esp32-01"               // this device's own broker account
+#define MQTT_PASS      "CHANGE_ME_DEVICE_PASSWORD"
+
+// Set 1 to verify the broker against CA_CERT below (production).
+// Set 0 only on a trusted bench network (accepts any cert).
+#define MQTT_VERIFY_SERVER 0
+
+// Paste broker/certs/ca.crt here when MQTT_VERIFY_SERVER is 1.
+const char CA_CERT[] PROGMEM = R"EOF(
+-----BEGIN CERTIFICATE-----
+...
+-----END CERTIFICATE-----
+)EOF";
+
+// Command-path interlock: the ESP32 ignores any command that does not carry
+// this key, so even someone who reaches the command topic cannot move the
+// hardware. Must match COMMAND_KEY in the backend's environment.
+#define COMMAND_KEY    "CHANGE_ME_COMMAND_KEY"
+
+// Hardware interlocks: outputs can never exceed these, whatever arrives.
+#define FAN_MAX_PCT    100
+#define PUMP_MAX_PCT   85      // keep the pump below its thermal limit
 
 #define DEVICE_ID      "esp32-01"
 #define TOPIC_PREFIX   "solarcool"
@@ -78,7 +99,7 @@ DallasTemperature tempSensors(&oneWire);
 DHT dht(DHT_PIN, DHT_TYPE);
 Adafruit_INA219 inaWater(0x40), inaAir(0x41), inaNone(0x44);
 
-WiFiClient net;
+WiFiClientSecure net;
 PubSubClient mqtt(net);
 
 // Which DS18B20 index belongs to which panel (print addresses once over Serial to map).
@@ -91,12 +112,19 @@ void setFan(int pct)  { ledcWrite(FAN_CH, constrain(pct, 0, 100) * 255 / 100); }
 void setPump(int pct) { ledcWrite(PUMP_CH, constrain(pct, 0, 100) * 255 / 100); }
 
 /* ---------------- MQTT ---------------- */
+bool validKey(JsonDocument& doc) {
+  return doc["key"].is<const char*>() && strcmp(doc["key"], COMMAND_KEY) == 0;
+}
+
 void onMessage(char* topic, byte* payload, unsigned int len) {
   JsonDocument doc;
   if (deserializeJson(doc, payload, len)) return;
-  if (doc["fan"].is<int>())  setFan(doc["fan"]);
-  if (doc["pump"].is<int>()) setPump(doc["pump"]);
-  Serial.printf("Command: fan=%d pump=%d\n",
+  // Interlock 1: no valid key -> ignore the command entirely.
+  if (!validKey(doc)) { Serial.println("Command rejected: bad key"); return; }
+  // Interlock 2: clamp to hardware limits, whatever was requested.
+  if (doc["fan"].is<int>())  setFan(min(doc["fan"].as<int>(),  FAN_MAX_PCT));
+  if (doc["pump"].is<int>()) setPump(min(doc["pump"].as<int>(), PUMP_MAX_PCT));
+  Serial.printf("Command applied: fan=%d pump=%d\n",
                 doc["fan"].is<int>() ? doc["fan"].as<int>() : -1,
                 doc["pump"].is<int>() ? doc["pump"].as<int>() : -1);
 }
@@ -173,6 +201,11 @@ void setup() {
   mqtt.setBufferSize(1024);          // JSON snapshot is bigger than the 256B default
   mqtt.setCallback(onMessage);
   mqtt.setKeepAlive(30);
+#if MQTT_VERIFY_SERVER
+  net.setCACert(CA_CERT);
+#else
+  net.setInsecure();   // bench only: skip server verification
+#endif
 }
 
 void loop() {

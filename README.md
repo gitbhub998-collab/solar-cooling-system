@@ -77,16 +77,16 @@ Readings payload — panel keys are free-form, so adding a panel is adding a key
 | `POST /api/commands` `{deviceId, fan, pump}` | → MQTT to the ESP32 |
 | `WS /ws` | live stream of readings/status/commands |
 
-## Run it locally (5 minutes)
+## Run it locally (10 minutes)
 
 ```bash
-docker compose up          # broker + backend (SQLite)
-# or without Docker:
-cd backend && npm install && cp .env.example .env && npm start
+# 1. broker accounts + certs (one time, see broker/README.md)
+# 2. start the stack
+MQTT_PASSWORD=... OPERATOR_TOKEN=... COMMAND_KEY=... docker compose up
 ```
 
-Dashboard: open `index.html`, set `BACKEND.restUrl = "http://localhost:8080"`
-and `BACKEND.wsUrl = "ws://localhost:8080/ws"`.
+Dashboard: open `index.html`, set `BACKEND.restUrl`, `BACKEND.wsUrl` and
+`BACKEND.operatorToken`. Full step-by-step in [docs/GO-LIVE.md](docs/GO-LIVE.md).
 
 ## Deploy for free
 
@@ -94,7 +94,7 @@ and `BACKEND.wsUrl = "ws://localhost:8080/ws"`.
    (or keep Mosquitto on a Raspberry Pi at the demo bench).
 2. **Backend**: Render → New → Blueprint → pick this repo — `render.yaml`
    wires the web service and a free Postgres automatically; fill in the
-   three MQTT env vars it asks for.
+   MQTT env vars plus `OPERATOR_TOKEN` and `COMMAND_KEY`.
 3. **Dashboard**: already on GitHub Pages from this repo. Set `restUrl`/`wsUrl`
    in `index.html` to the Render URL and commit.
 
@@ -119,10 +119,18 @@ Without a backend URL the dashboard generates realistic simulated data
 (hotter uncooled panel; the sliders visibly affect the temperatures), so the
 full presentation can be rehearsed before any hardware is connected.
 
-## Securing the broker (before demo day)
+## Security (built in, on by default)
 
-Use TLS (port 8883), a username/password pair, and in Mosquitto a
-`password_file`. Keep the public test broker for development only.
+- **Private broker**: anonymous access disabled, TLS on 8883, per-device ACLs
+  (`broker/acl`) — a device can publish only its own readings and read only
+  its own command topic. Setup: [broker/README.md](broker/README.md).
+- **Operator auth**: `POST /api/commands` requires a bearer token
+  (`OPERATOR_TOKEN`); read-only endpoints stay open for viewers.
+- **Device interlock**: the ESP32 ignores any command without `COMMAND_KEY`
+  and clamps outputs to hardware limits (`FAN_MAX_PCT` / `PUMP_MAX_PCT`).
+
+The public anonymous test brokers are for early development only — never for
+the demo.
 
 ---
 

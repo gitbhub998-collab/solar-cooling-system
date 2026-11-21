@@ -72,7 +72,19 @@ app.get('/api/commands', async (req, res) => {
   res.json({ deviceId, commands: await db.commands(deviceId) });
 });
 
-app.post('/api/commands', async (req, res) => {
+/* ---------------- operator auth on the command path ---------------- */
+// Read-only endpoints stay open; anything that can move hardware requires
+// the operator token when one is configured (always configure it outside dev).
+function requireOperator(req, res, next) {
+  if (!config.operatorToken) return next();   // dev mode, warned about at boot
+  const token = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
+  if (token !== config.operatorToken) {
+    return res.status(401).json({ error: 'operator token required' });
+  }
+  next();
+}
+
+app.post('/api/commands', requireOperator, async (req, res) => {
   const { deviceId = 'esp32-01', fan, pump } = req.body || {};
   for (const [k, v] of Object.entries({ fan, pump })) {
     if (typeof v !== 'number' || v < 0 || v > 100) {
@@ -111,4 +123,10 @@ mqttBridge.start(broadcast);
 
 server.listen(config.port, () => {
   console.log(`SolarCool backend on :${config.port} (db=${db.kind}, mqtt=${config.mqtt.url})`);
+  if (!config.operatorToken) {
+    console.warn('WARNING: OPERATOR_TOKEN not set - /api/commands is unauthenticated (dev only)');
+  }
+  if (config.mqtt.url.startsWith('mqtt://') && !/localhost|127\.0\.0\.1/.test(config.mqtt.url)) {
+    console.warn('WARNING: plaintext MQTT to a non-local broker - use mqtts:// in production');
+  }
 });

@@ -1,0 +1,19 @@
+# ACL: who may touch which topics.
+# Every device account is locked to its own subtree, so a compromised or
+# misbehaving device can neither read another device's data nor send it commands.
+
+# The backend service account: the only writer of command topics,
+# the only reader across all devices.
+user backend
+topic readwrite solarcool/#
+
+# Device account for esp32-01 (add one block per deployed device).
+user esp32-01
+topic write solarcool/esp32-01/readings
+topic write solarcool/esp32-01/status
+topic read  solarcool/esp32-01/commands
+
+# user esp32-02
+# topic write solarcool/esp32-02/readings
+# topic write solarcool/esp32-02/status
+# topic read  solarcool/esp32-02/commands

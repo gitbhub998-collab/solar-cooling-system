@@ -178,7 +178,8 @@
 const BACKEND = {
   restUrl: "",    // e.g. "https://solarcool-backend.onrender.com"
   wsUrl: "",      // e.g. "wss://solarcool-backend.onrender.com/ws"
-  deviceId: "esp32-01"
+  deviceId: "esp32-01",
+  operatorToken: ""   // must match OPERATOR_TOKEN on the backend; required to move the fan/pump
 };
 const DEMO = !BACKEND.restUrl;
 
@@ -316,7 +317,8 @@ function sendCommand(){
   clearTimeout(cmdTimer);
   cmdTimer = setTimeout(()=>{
     fetch(BACKEND.restUrl + '/api/commands', {
-      method:'POST', headers:{'Content-Type':'application/json'},
+      method:'POST',
+      headers:{'Content-Type':'application/json', 'Authorization':'Bearer ' + BACKEND.operatorToken},
       body: JSON.stringify({deviceId: BACKEND.deviceId, fan: S.controls.fan, pump: S.controls.pump})
     }).catch(()=>{});
   }, 250);   // debounce while dragging
