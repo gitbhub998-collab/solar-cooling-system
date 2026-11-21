@@ -1,0 +1,18 @@
+{
+  "name": "solarcool-backend",
+  "version": "1.0.0",
+  "description": "SolarCool backend: MQTT ingest, time-series storage, REST API, WebSocket live feed",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "better-sqlite3": "^11.3.0",
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "mqtt": "^5.10.1",
+    "ws": "^8.18.0"
+  }
+}

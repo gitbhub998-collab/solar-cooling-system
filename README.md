@@ -1,61 +1,108 @@
 # SolarCool — PV Cooling Comparison System
 
-Graduation project: a live monitoring and control system that compares three
-solar panel cooling setups — **water-cooled**, **air-cooled**, and **uncooled**
-— in real time.
+Graduation project: a complete IoT system that compares three solar panel
+cooling setups — **water-cooled**, **air-cooled**, and **uncooled** — with
+live monitoring, historical storage, and remote control.
 
-## System architecture
+## Architecture
 
 ```
- 3 solar panels + sensors        Firebase                 Web dashboard
-+------------------+      push    Realtime      live     +------------------+
-| ESP32            | -----------> Database  ---------->  | index.html       |
-|  - 3x DS18B20    |            (backend)   <----------  | (GitHub Pages)   |
-|  - 3x INA219     | <----------- /controls   sliders    |                  |
-|  - DHT22 ambient |   fan/pump %                        +------------------+
-|  - battery ADC   |
-|  - fan PWM       |
-|  - pump PWM      |
-+------------------+
+  sensors + actuators            MQTT                 backend                dashboard
++--------------------+    publish   broker    subscribe  +---------------+    WebSocket  +-------------+
+| ESP32              | ----------> (any MQTT ----------> | Node.js       | ---------->   | index.html  |
+|  - 3x DS18B20 temp |  readings   broker)               |  - REST API   |             | (GitHub     |
+|  - 3x INA219 power |            ---------->            |  - WebSocket  | <---------- |  Pages)     |
+|  - DHT22 ambient   | <---------- commands              |  - SQLite or  |   REST      +-------------+
+|  - battery monitor | subscribe                         |    Postgres   |
+|  - fan PWM         |                                   +---------------+
+|  - pump PWM        |
++--------------------+
 ```
 
-- **Frontend**: `index.html` — single-file live dashboard (temperature cards,
-  power charts, battery gauge, fan/pump sliders, Arabic/English toggle).
-  Runs on simulated data until Firebase is configured; works offline as a demo.
-- **Backend**: Firebase Realtime Database — `firebase/database.rules.json`.
-- **Firmware**: `firmware/solar_cooling_esp32/solar_cooling_esp32.ino`.
+Every reading is stored with its timestamp, so the project has full history
+for analysis and defense-day graphs — not just a live view.
 
-## Live dashboard
+### Why MQTT + a real backend
 
-Hosted with GitHub Pages from this repo:
-`https://<your-username>.github.io/<repo-name>/`
+- **MQTT is the industry standard for IoT** — lightweight, pub/sub, built for
+  unreliable networks, and every serious platform speaks it.
+- **Decoupled**: the ESP32, the backend, and the dashboard each know nothing
+  about the others' internals. Swap or extend any piece independently.
+- **Extensible**: a new panel, sensor, or even a second ESP32 just publishes
+  under a new key or device ID — no schema or code changes anywhere else.
+- **Retained commands**: the last fan/pump setpoints survive device reboots.
 
-## Database layout
+## Repo layout
 
-| Path | Written by | Contents |
+| Path | What it is |
+|---|---|
+| `index.html` | The dashboard (single file, EN/عربي, live charts, fan/pump control) |
+| `firmware/solar_cooling_esp32/` | ESP32 firmware (MQTT publisher/subscriber) |
+| `backend/` | Node.js backend: MQTT ingest, REST API, WebSocket, SQLite/Postgres |
+| `broker/mosquitto.conf` | Local MQTT broker config |
+| `docker-compose.yml` | One-command local stack (broker + backend [+ Postgres]) |
+| `render.yaml` | One-click free cloud deploy of the backend on Render |
+
+## MQTT topics
+
+| Topic | Direction | Payload |
 |---|---|---|
-| `/panels/water` | ESP32 | `{temperature, voltage, current, power}` |
-| `/panels/air` | ESP32 | same |
-| `/panels/none` | ESP32 | same |
-| `/ambient` | ESP32 | `{temperature}` |
-| `/battery` | ESP32 | `{voltage, percentage}` |
-| `/controls` | dashboard | `{fan: 0-100, pump: 0-100}` — read by the ESP32 |
+| `solarcool/<deviceId>/readings` | ESP32 → backend | JSON snapshot (below) |
+| `solarcool/<deviceId>/status` | ESP32 (LWT) | `online` / `offline` |
+| `solarcool/<deviceId>/commands` | backend → ESP32 | `{"fan":0-100,"pump":0-100}` (retained) |
 
-## Setup (10 minutes)
+Readings payload — panel keys are free-form, so adding a panel is adding a key:
 
-1. **Firebase**: create a project at https://console.firebase.google.com →
-   add a **Realtime Database** → copy `firebase/database.rules.json` into the
-   Rules tab → register a **Web App** and copy its config.
-2. **Auth for the ESP32**: in Firebase → Authentication → enable
-   **Email/Password** → add a user (e.g. `esp32@yourproject.com`).
-3. **Dashboard**: paste the web app config into `firebaseConfig` at the top of
-   the `<script>` in `index.html`.
-4. **Firmware**: install the libraries listed at the top of the `.ino`, fill in
-   WiFi + Firebase + auth credentials in section 1, and flash the ESP32.
-5. Open the dashboard — the orange **DEMO DATA** badge turns teal
-   **LIVE · FIREBASE** once the first reading arrives.
+```json
+{
+  "panels": {
+    "water": { "temperature": 44.1, "voltage": 16.6, "current": 5.4, "power": 90.1 },
+    "air":   { "temperature": 49.8, "voltage": 16.2, "current": 5.4, "power": 88.0 },
+    "none":  { "temperature": 60.5, "voltage": 15.4, "current": 5.4, "power": 83.4 }
+  },
+  "ambient": { "temperature": 33.1 },
+  "battery": { "voltage": 12.4, "percentage": 78 }
+}
+```
 
-## Wiring (defaults, all changeable in the firmware)
+## REST API
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/health` | service, broker and DB status |
+| `GET /api/devices` | known devices + last seen |
+| `GET /api/latest?deviceId=` | newest full snapshot (dashboard boot) |
+| `GET /api/readings?deviceId=&panel=&from=&to=&limit=` | raw history |
+| `GET /api/stats?deviceId=&hours=24` | per-panel averages, peaks, energy (Wh) |
+| `POST /api/commands` `{deviceId, fan, pump}` | → MQTT to the ESP32 |
+| `WS /ws` | live stream of readings/status/commands |
+
+## Run it locally (5 minutes)
+
+```bash
+docker compose up          # broker + backend (SQLite)
+# or without Docker:
+cd backend && npm install && cp .env.example .env && npm start
+```
+
+Dashboard: open `index.html`, set `BACKEND.restUrl = "http://localhost:8080"`
+and `BACKEND.wsUrl = "ws://localhost:8080/ws"`.
+
+## Deploy for free
+
+1. **Broker**: create a free cluster on HiveMQ Cloud or EMQX Serverless
+   (or keep Mosquitto on a Raspberry Pi at the demo bench).
+2. **Backend**: Render → New → Blueprint → pick this repo — `render.yaml`
+   wires the web service and a free Postgres automatically; fill in the
+   three MQTT env vars it asks for.
+3. **Dashboard**: already on GitHub Pages from this repo. Set `restUrl`/`wsUrl`
+   in `index.html` to the Render URL and commit.
+
+Free-tier note: Render's free web service sleeps when idle. The ESP32 keeps
+publishing; the backend catches up when it wakes. For an always-on demo,
+run the stack on a Raspberry Pi with `docker compose up`.
+
+## Wiring (defaults, changeable in firmware)
 
 | Component | ESP32 pin |
 |---|---|
@@ -66,14 +113,16 @@ Hosted with GitHub Pages from this repo:
 | Fan MOSFET gate (PWM) | GPIO 25 |
 | Pump MOSFET gate (PWM) | GPIO 26 |
 
-The three INA219 addresses are set with their A0/A1 solder jumpers:
-0x40 = none bridged, 0x41 = A0, 0x44 = A1.
-
 ## Demo mode
 
-Without a Firebase config the dashboard generates realistic simulated data
-(hotter uncooled panel, fan/pump sliders visibly affect the temperatures), so
-you can rehearse the full presentation before the hardware is connected.
+Without a backend URL the dashboard generates realistic simulated data
+(hotter uncooled panel; the sliders visibly affect the temperatures), so the
+full presentation can be rehearsed before any hardware is connected.
+
+## Securing the broker (before demo day)
+
+Use TLS (port 8883), a username/password pair, and in Mosquitto a
+`password_file`. Keep the public test broker for development only.
 
 ---
 

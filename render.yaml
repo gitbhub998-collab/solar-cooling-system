@@ -1,0 +1,32 @@
+# Render blueprint: free web service for the backend + free Postgres.
+# https://render.com -> New -> Blueprint -> pick this repo.
+#
+# On the free tier the service sleeps when idle; the ESP32 keeps publishing
+# to the broker and the backend catches up when it wakes. For always-on,
+# upgrade the plan or run on a Raspberry Pi (docker-compose).
+
+services:
+  - type: web
+    name: solarcool-backend
+    runtime: node
+    rootDir: backend
+    plan: free
+    buildCommand: npm install
+    startCommand: node src/server.js
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: solarcool-db
+          property: connectionString
+      - key: MQTT_URL
+        sync: false          # fill with your broker URL (e.g. HiveMQ Cloud, mqtts://...)
+      - key: MQTT_USERNAME
+        sync: false
+      - key: MQTT_PASSWORD
+        sync: false
+      - key: TOPIC_PREFIX
+        value: solarcool
+
+databases:
+  - name: solarcool-db
+    plan: free

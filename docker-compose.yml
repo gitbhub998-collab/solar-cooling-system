@@ -1,0 +1,45 @@
+# One-command local stack: MQTT broker (Mosquitto) + backend (+ optional Postgres)
+#
+#   docker compose up            -> broker + backend + SQLite storage
+#   docker compose --profile pg up   -> same, but with PostgreSQL storage
+#
+# Dashboard then uses ws://localhost:8080/ws and http://localhost:8080
+
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    ports: ["1883:1883"]
+    volumes:
+      - ./broker/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+
+  backend:
+    build: ./backend
+    ports: ["8080:8080"]
+    environment:
+      MQTT_URL: mqtt://mosquitto:1883
+      DATABASE_URL: sqlite:///app/data/solarcool.db
+    volumes:
+      - backend-data:/app/data
+    depends_on: [mosquitto]
+
+  postgres:
+    image: postgres:16-alpine
+    profiles: ["pg"]
+    environment:
+      POSTGRES_PASSWORD: solarcool
+      POSTGRES_DB: solarcool
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+
+  backend-pg:
+    build: ./backend
+    profiles: ["pg"]
+    ports: ["8080:8080"]
+    environment:
+      MQTT_URL: mqtt://mosquitto:1883
+      DATABASE_URL: postgres://postgres:solarcool@postgres:5432/solarcool
+    depends_on: [mosquitto, postgres]
+
+volumes:
+  backend-data:
+  pg-data:

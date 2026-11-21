@@ -1,10 +1,15 @@
 /*
- * SolarCool — ESP32 firmware for the PV cooling comparison project
- * ================================================================
+ * SolarCool — ESP32 firmware (MQTT edition)
+ * =========================================
  * Reads 3 solar panels (water-cooled / air-cooled / uncooled), the battery
- * and the ambient temperature, pushes everything to Firebase Realtime
- * Database, and drives the air fan + water pump from the dashboard's
- * /controls values.
+ * and ambient temperature, publishes one JSON snapshot to the MQTT broker
+ * every PUBLISH_INTERVAL_MS, and applies fan/pump setpoints received from
+ * the backend (retained commands, so they survive reboots).
+ *
+ * Topic layout (TOPIC_PREFIX + DEVICE_ID):
+ *   solarcool/esp32-01/readings   -> this device publishes the JSON snapshot
+ *   solarcool/esp32-01/status     -> "online" / "offline" (Last Will)
+ *   solarcool/esp32-01/commands   <- this device subscribes: {"fan":0-100,"pump":0-100}
  *
  * Hardware (defaults, all changeable below):
  *   - 3x DS18B20 panel temperature sensors on ONE OneWire bus (GPIO 4)
@@ -15,8 +20,9 @@
  *   - Air fan  PWM on GPIO 25 (through a MOSFET, e.g. IRLZ44N)
  *   - Water pump PWM on GPIO 26 (through a MOSFET)
  *
- * Arduino IDE libraries to install:
- *   - "Firebase ESP Client" by Mobizt (Firebase_ESP_Client)
+ * Arduino IDE libraries (Library Manager):
+ *   - PubSubClient by Nick O'Leary
+ *   - ArduinoJson by Benoit Blanchon (v7)
  *   - OneWire, DallasTemperature
  *   - Adafruit INA219
  *   - DHT sensor library + Adafruit Unified Sensor
@@ -24,31 +30,28 @@
  */
 
 #include <WiFi.h>
-#include <Firebase_ESP_Client.h>
+#include <PubSubClient.h>
+#include <ArduinoJson.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
 #include <Wire.h>
 #include <Adafruit_INA219.h>
 #include <DHT.h>
 
-// Helper files that ship with the Firebase library
-#include "addons/TokenHelper.h"
-#include "addons/RTDBHelper.h"
-
 /* ============ 1) EDIT THIS CONFIG SECTION ============ */
 #define WIFI_SSID      "YOUR_WIFI_NAME"
 #define WIFI_PASSWORD  "YOUR_WIFI_PASSWORD"
 
-// From Firebase console -> Project settings -> Web app
-#define API_KEY        "YOUR_FIREBASE_API_KEY"
-#define DATABASE_URL   "https://YOUR-PROJECT-default-rtdb.firebaseio.com/"
+// Broker. Use mqtts (8883 + WiFiClientSecure) with a managed broker in production.
+#define MQTT_HOST      "broker.emqx.io"     // dev public broker; replace with your own
+#define MQTT_PORT      1883
+#define MQTT_USER      ""                   // empty = anonymous
+#define MQTT_PASS      ""
 
-// Anonymous email/password account created in Firebase Auth for the ESP32
-// (Authentication -> Sign-in method -> enable Email/Password -> add user)
-#define USER_EMAIL     "esp32@yourproject.com"
-#define USER_PASSWORD  "esp32-secret-password"
+#define DEVICE_ID      "esp32-01"
+#define TOPIC_PREFIX   "solarcool"
 
-#define PUBLISH_INTERVAL_MS 2000   // how often sensor data is pushed
+#define PUBLISH_INTERVAL_MS 2000
 /* ===================================================== */
 
 // Pins
@@ -61,33 +64,91 @@
 
 // Battery divider: Vbat = Vadc * (R1+R2)/R2
 const float BAT_DIVIDER = (100000.0f + 27000.0f) / 27000.0f;  // 4.7037
-const float BAT_FULL_V  = 12.6f;   // 100%
-const float BAT_EMPTY_V = 10.8f;   // 0%
+const float BAT_FULL_V  = 12.6f;
+const float BAT_EMPTY_V = 10.8f;
 
 // PWM (ESP32 LEDC)
 const int FAN_CH = 0, PUMP_CH = 1;
-const int PWM_FREQ = 25000, PWM_RES = 8;   // 25 kHz, 8-bit
+const int PWM_FREQ = 25000, PWM_RES = 8;
+
+char topicReadings[64], topicStatus[64], topicCommands[64], clientId[32];
 
 OneWire oneWire(ONE_WIRE_BUS);
 DallasTemperature tempSensors(&oneWire);
 DHT dht(DHT_PIN, DHT_TYPE);
 Adafruit_INA219 inaWater(0x40), inaAir(0x41), inaNone(0x44);
 
-FirebaseData fbdo;
-FirebaseAuth auth;
-FirebaseConfig fbConfig;
+WiFiClient net;
+PubSubClient mqtt(net);
 
-// Which DS18B20 index belongs to which panel.
-// Determined once at boot by probing; print addresses over Serial to map them.
+// Which DS18B20 index belongs to which panel (print addresses once over Serial to map).
 int idxWater = 0, idxAir = 1, idxNone = 2;
 
 unsigned long lastPublish = 0;
 
+/* ---------------- outputs ---------------- */
+void setFan(int pct)  { ledcWrite(FAN_CH, constrain(pct, 0, 100) * 255 / 100); }
+void setPump(int pct) { ledcWrite(PUMP_CH, constrain(pct, 0, 100) * 255 / 100); }
+
+/* ---------------- MQTT ---------------- */
+void onMessage(char* topic, byte* payload, unsigned int len) {
+  JsonDocument doc;
+  if (deserializeJson(doc, payload, len)) return;
+  if (doc["fan"].is<int>())  setFan(doc["fan"]);
+  if (doc["pump"].is<int>()) setPump(doc["pump"]);
+  Serial.printf("Command: fan=%d pump=%d\n",
+                doc["fan"].is<int>() ? doc["fan"].as<int>() : -1,
+                doc["pump"].is<int>() ? doc["pump"].as<int>() : -1);
+}
+
+void ensureMqtt() {
+  while (!mqtt.connected()) {
+    Serial.print("MQTT...");
+    const char* user = strlen(MQTT_USER) ? MQTT_USER : nullptr;
+    const char* pass = strlen(MQTT_PASS) ? MQTT_PASS : nullptr;
+    // Last Will marks the device offline if it drops.
+    if (mqtt.connect(clientId, user, pass, topicStatus, 1, true, "offline")) {
+      Serial.println("connected");
+      mqtt.publish(topicStatus, "online", true);
+      mqtt.subscribe(topicCommands, 1);
+    } else {
+      Serial.printf("failed rc=%d, retry in 5s\n", mqtt.state());
+      delay(5000);
+    }
+  }
+}
+
+/* ---------------- sensors ---------------- */
+float readBatteryVoltage() {
+  uint32_t raw = 0;
+  for (int i = 0; i < 16; i++) { raw += analogRead(BAT_ADC_PIN); delay(2); }
+  return (raw / 16.0f) * 3.3f / 4095.0f * BAT_DIVIDER;
+}
+
+float batteryPercent(float v) {
+  return constrain((v - BAT_EMPTY_V) / (BAT_FULL_V - BAT_EMPTY_V) * 100.0f, 0.0f, 100.0f);
+}
+
+void addPanel(JsonObject panels, const char* name, float tempC, Adafruit_INA219& ina) {
+  float busV = ina.getBusVoltage_V();
+  float curA = ina.getCurrent_mA() / 1000.0f;
+  JsonObject p = panels[name].to<JsonObject>();
+  p["temperature"] = tempC;
+  p["voltage"]     = busV;
+  p["current"]     = curA;
+  p["power"]       = busV * curA;
+}
+
+/* ---------------- Arduino ---------------- */
 void setup() {
   Serial.begin(115200);
-  Serial.println("\nSolarCool ESP32 booting...");
+  Serial.println("\nSolarCool ESP32 (MQTT) booting...");
 
-  // Sensors
+  snprintf(topicReadings, sizeof(topicReadings), "%s/%s/readings", TOPIC_PREFIX, DEVICE_ID);
+  snprintf(topicStatus,   sizeof(topicStatus),   "%s/%s/status",   TOPIC_PREFIX, DEVICE_ID);
+  snprintf(topicCommands, sizeof(topicCommands), "%s/%s/commands", TOPIC_PREFIX, DEVICE_ID);
+  snprintf(clientId,      sizeof(clientId),      "solarcool-%s",   DEVICE_ID);
+
   tempSensors.begin();
   dht.begin();
   Wire.begin(21, 22);
@@ -95,75 +156,30 @@ void setup() {
   analogReadResolution(12);
   analogSetAttenuation(ADC_11db);
 
-  // PWM outputs
   ledcSetup(FAN_CH, PWM_FREQ, PWM_RES);
   ledcAttachPin(FAN_PIN, FAN_CH);
   ledcSetup(PUMP_CH, PWM_FREQ, PWM_RES);
   ledcAttachPin(PUMP_PIN, PUMP_CH);
-  ledcWrite(FAN_CH, 179);   // 70%
-  ledcWrite(PUMP_CH, 153);  // 60%
+  setFan(70); setPump(60);   // safe defaults until a retained command arrives
 
   Serial.printf("Found %d DS18B20 sensor(s)\n", tempSensors.getDeviceCount());
 
-  // WiFi
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   Serial.print("WiFi");
   while (WiFi.status() != WL_CONNECTED) { Serial.print('.'); delay(300); }
   Serial.printf("\nConnected: %s\n", WiFi.localIP().toString().c_str());
 
-  // Firebase
-  fbConfig.api_key = API_KEY;
-  fbConfig.database_url = DATABASE_URL;
-  auth.user.email = USER_EMAIL;
-  auth.user.password = USER_PASSWORD;
-  fbConfig.token_status_callback = tokenStatusCallback;  // from TokenHelper.h
-  Firebase.begin(&fbConfig, &auth);
-  Firebase.reconnectWiFi(true);
-  fbdo.setBSSLBufferSize(4096, 1024);
-  Serial.println("Firebase ready.");
-}
-
-float readBatteryVoltage() {
-  uint32_t raw = 0;
-  for (int i = 0; i < 16; i++) { raw += analogRead(BAT_ADC_PIN); delay(2); }
-  float vAdc = (raw / 16.0f) * 3.3f / 4095.0f;
-  return vAdc * BAT_DIVIDER;
-}
-
-float batteryPercent(float v) {
-  float pct = (v - BAT_EMPTY_V) / (BAT_FULL_V - BAT_EMPTY_V) * 100.0f;
-  return constrain(pct, 0.0f, 100.0f);
-}
-
-void publishPanel(const char* name, float tempC, Adafruit_INA219& ina) {
-  float busV   = ina.getBusVoltage_V();
-  float curA   = ina.getCurrent_mA() / 1000.0f;
-  float powerW = busV * curA;
-
-  FirebaseJson j;
-  j.set("temperature", tempC);
-  j.set("voltage", busV);
-  j.set("current", curA);
-  j.set("power", powerW);
-
-  String path = String("panels/") + name;
-  if (!Firebase.RTDB.setJSON(&fbdo, path.c_str(), &j)) {
-    Serial.printf("Push failed (%s): %s\n", name, fbdo.errorReason().c_str());
-  }
-}
-
-void applyControls() {
-  if (Firebase.RTDB.getInt(&fbdo, "controls/fan")) {
-    int fan = constrain(fbdo.intData(), 0, 100);
-    ledcWrite(FAN_CH, fan * 255 / 100);
-  }
-  if (Firebase.RTDB.getInt(&fbdo, "controls/pump")) {
-    int pump = constrain(fbdo.intData(), 0, 100);
-    ledcWrite(PUMP_CH, pump * 255 / 100);
-  }
+  mqtt.setServer(MQTT_HOST, MQTT_PORT);
+  mqtt.setBufferSize(1024);          // JSON snapshot is bigger than the 256B default
+  mqtt.setCallback(onMessage);
+  mqtt.setKeepAlive(30);
 }
 
 void loop() {
+  if (WiFi.status() != WL_CONNECTED) { WiFi.reconnect(); delay(1000); return; }
+  if (!mqtt.connected()) ensureMqtt();
+  mqtt.loop();
+
   if (millis() - lastPublish < PUBLISH_INTERVAL_MS) return;
   lastPublish = millis();
 
@@ -172,23 +188,24 @@ void loop() {
   float tAir   = tempSensors.getTempCByIndex(idxAir);
   float tNone  = tempSensors.getTempCByIndex(idxNone);
   float tAmb   = dht.readTemperature();
+  float batV   = readBatteryVoltage();
 
-  publishPanel("water", tWater, inaWater);
-  publishPanel("air",   tAir,   inaAir);
-  publishPanel("none",  tNone,  inaNone);
+  JsonDocument doc;
+  doc["ts"] = 0;  // server stamps the time; the ESP32 has no RTC
+  JsonObject panels = doc["panels"].to<JsonObject>();
+  addPanel(panels, "water", tWater, inaWater);
+  addPanel(panels, "air",   tAir,   inaAir);
+  addPanel(panels, "none",  tNone,  inaNone);
+  if (!isnan(tAmb)) doc["ambient"]["temperature"] = tAmb;
+  doc["battery"]["voltage"]    = batV;
+  doc["battery"]["percentage"] = batteryPercent(batV);
 
-  if (!isnan(tAmb)) {
-    Firebase.RTDB.setFloat(&fbdo, "ambient/temperature", tAmb);
+  char buf[600];
+  size_t n = serializeJson(doc, buf, sizeof(buf));
+  if (mqtt.publish(topicReadings, buf, n)) {
+    Serial.printf("Published: W %.1fC | A %.1fC | N %.1fC | bat %.2fV\n",
+                  tWater, tAir, tNone, batV);
+  } else {
+    Serial.println("Publish failed");
   }
-
-  float batV = readBatteryVoltage();
-  FirebaseJson jb;
-  jb.set("voltage", batV);
-  jb.set("percentage", batteryPercent(batV));
-  Firebase.RTDB.setJSON(&fbdo, "battery", &jb);
-
-  applyControls();
-
-  Serial.printf("W %.1fC | A %.1fC | N %.1fC | amb %.1fC | bat %.2fV\n",
-                tWater, tAir, tNone, tAmb, batV);
 }

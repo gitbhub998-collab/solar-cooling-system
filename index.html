@@ -148,7 +148,7 @@
         <label><span data-i18n="pump">💧 Water pump speed</span><b id="pumpVal">60%</b></label>
         <input type="range" id="pumpSlider" min="0" max="100" value="60">
       </div>
-      <div class="sub" style="margin-top:12px" data-i18n="ctrlNote">Sent to the ESP32 in real time when Firebase is connected.</div>
+      <div class="sub" style="margin-top:12px" data-i18n="ctrlNote">Sent through the backend over MQTT the moment you move them.</div>
     </div>
   </div>
 
@@ -163,38 +163,24 @@
 
   <footer>
     <span data-i18n="foot1">Graduation project — solar panel cooling system (water / air / none).</span><br>
-    <span data-i18n="foot2">Data source: ESP32 → Firebase Realtime Database. Running on simulated data until firebaseConfig is set in index.html.</span>
+    <span data-i18n="foot2">Data source: ESP32 → MQTT → SolarCool backend. Running on simulated data until BACKEND.restUrl is set in index.html.</span>
   </footer>
 </div>
 
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
 <script>
-/* ================= FIREBASE SETUP =================
-   1. Create a project at https://console.firebase.google.com
-   2. Add a Realtime Database (start in test mode while developing)
-   3. Register a Web App and paste its config below.
-   Expected database layout (written by the ESP32):
-
-   /panels/water   { temperature, voltage, current, power }
-   /panels/air     { temperature, voltage, current, power }
-   /panels/none    { temperature, voltage, current, power }
-   /ambient        { temperature }
-   /battery        { voltage, percentage }
-   /controls       { fan, pump }        <- written by THIS dashboard, read by the ESP32
-
-   Leave firebaseConfig empty and the dashboard runs on simulated data.
-==================================================== */
-const firebaseConfig = {
-  apiKey: "",
-  authDomain: "",
-  databaseURL: "",
-  projectId: "",
-  storageBucket: "",
-  messagingSenderId: "",
-  appId: ""
+/* ================= BACKEND CONNECTION =================
+   Data path: ESP32 --MQTT--> broker --> SolarCool backend (backend/ folder in
+   this repo) --WebSocket + REST--> this dashboard.
+   1. Deploy the backend (see README - free on Render, or any VPS / Raspberry Pi)
+   2. Fill restUrl and wsUrl below with its address
+   Leave them empty and the dashboard runs on simulated data (demo mode).
+========================================================= */
+const BACKEND = {
+  restUrl: "",    // e.g. "https://solarcool-backend.onrender.com"
+  wsUrl: "",      // e.g. "wss://solarcool-backend.onrender.com/ws"
+  deviceId: "esp32-01"
 };
-const DEMO = !firebaseConfig.apiKey;
+const DEMO = !BACKEND.restUrl;
 
 /* ---------------- i18n ---------------- */
 const T = {
@@ -203,21 +189,21 @@ const T = {
       power:"Power",voltage:"Voltage",current:"Current",gain:"Gain vs uncooled",ambient:"Ambient",
       battery:"Battery",charge:"charge",state:"State",charging:"Charging",discharging:"Discharging",full:"Full",
       controls:"Cooling controls",fan:"🌬️ Air fan speed",pump:"💧 Water pump speed",
-      ctrlNote:"Sent to the ESP32 in real time when Firebase is connected.",
+      ctrlNote:"Sent through the backend over MQTT the moment you move them.",
       tempChart:"Panel temperatures — live",powerChart:"Power output — live",
-      cooler:"cooler than uncooled",demo:"DEMO DATA",live:"LIVE · FIREBASE",
+      cooler:"cooler than uncooled",demo:"DEMO DATA",live:"LIVE · MQTT",reconnecting:"RECONNECTING…",
       foot1:"Graduation project — solar panel cooling system (water / air / none).",
-      foot2:"Data source: ESP32 → Firebase Realtime Database. Running on simulated data until firebaseConfig is set in index.html."},
+      foot2:"Data source: ESP32 → MQTT → SolarCool backend. Running on simulated data until BACKEND.restUrl is set in index.html."},
   ar:{title:"SolarCool — مقارنة تبريد الألواح الشمسية",subtitle:"مشروع التخرج · متابعة لحظية للوح المبرد بالمياه / بالهواء / بدون تبريد",
       water:"اللوح المبرد بالمياه",air:"اللوح المبرد بالهواء",none:"اللوح بدون تبريد",baseline:"مرجع المقارنة",
       power:"القدرة",voltage:"الجهد",current:"التيار",gain:"الزيادة عن بدون تبريد",ambient:"حرارة الجو",
       battery:"البطارية",charge:"الشحن",state:"الحالة",charging:"بتشحن",discharging:"بتفرغ",full:"ممتلئة",
       controls:"التحكم في التبريد",fan:"🌬️ سرعة مروحة الهواء",pump:"💧 سرعة طلمبة المياه",
-      ctrlNote:"بتتبعت للـ ESP32 لحظيًا لما Firebase يكون متوصل.",
+      ctrlNote:"بتتبعت عن طريق الباك اند وMQTT أول ما تحركها.",
       tempChart:"درجات حرارة الألواح — لايف",powerChart:"القدرة الناتجة — لايف",
-      cooler:"أبرد من بدون تبريد",demo:"بيانات تجريبية",live:"مباشر · FIREBASE",
+      cooler:"أبرد من بدون تبريد",demo:"بيانات تجريبية",live:"مباشر · MQTT",reconnecting:"بيحاول يتوصل…",
       foot1:"مشروع تخرج — نظام تبريد للألواح الشمسية (مياه / هواء / بدون).",
-      foot2:"مصدر البيانات: ESP32 ← Firebase Realtime Database. شغال ببيانات محاكاة لحد ما firebaseConfig يتملى في index.html."}
+      foot2:"مصدر البيانات: ESP32 ← MQTT ← باك اند SolarCool. شغال ببيانات محاكاة لحد ما BACKEND.restUrl يتملى في index.html."}
 };
 let lang = 'en';
 function applyLang(){
@@ -324,41 +310,62 @@ function buildCharts(){
 }
 
 /* ---------------- controls ---------------- */
-let db = null;
+let cmdTimer = null;
+function sendCommand(){
+  if(DEMO) return;
+  clearTimeout(cmdTimer);
+  cmdTimer = setTimeout(()=>{
+    fetch(BACKEND.restUrl + '/api/commands', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({deviceId: BACKEND.deviceId, fan: S.controls.fan, pump: S.controls.pump})
+    }).catch(()=>{});
+  }, 250);   // debounce while dragging
+}
+function setSliderUI(fan, pump){
+  if(typeof fan==='number'){ S.controls.fan=fan; $('fanSlider').value=fan; $('fanVal').textContent=fan+'%'; }
+  if(typeof pump==='number'){ S.controls.pump=pump; $('pumpSlider').value=pump; $('pumpVal').textContent=pump+'%'; }
+}
 function bindControls(){
-  $('fanSlider').addEventListener('input', e=>{
-    S.controls.fan = +e.target.value; $('fanVal').textContent = S.controls.fan+'%';
-    if(db) db.ref('controls/fan').set(S.controls.fan);
-  });
-  $('pumpSlider').addEventListener('input', e=>{
-    S.controls.pump = +e.target.value; $('pumpVal').textContent = S.controls.pump+'%';
-    if(db) db.ref('controls/pump').set(S.controls.pump);
-  });
+  $('fanSlider').addEventListener('input', e=>{ setSliderUI(+e.target.value, undefined); sendCommand(); });
+  $('pumpSlider').addEventListener('input', e=>{ setSliderUI(undefined, +e.target.value); sendCommand(); });
 }
 
-/* ---------------- firebase live mode ---------------- */
-function connectFirebase(){
-  firebase.initializeApp(firebaseConfig);
-  db = firebase.database();
+/* ---------------- live mode: REST boot + WebSocket stream ---------------- */
+let ws = null;
+function applyLive(m){
+  if(m.panels) for(const k in m.panels){ if(!S[k]) S[k]={temperature:0,voltage:0,current:0,power:0}; Object.assign(S[k], m.panels[k]); }
+  if(m.ambient && m.ambient.temperature!=null) S.ambient = m.ambient.temperature;
+  if(m.battery) Object.assign(S.battery, m.battery);
+  if(m.controls) setSliderUI(m.controls.fan, m.controls.pump);
+  pushHist(); render();
+}
+function connectBackend(){
   $('modeDot').className = 'dot live';
   $('modeText').textContent = T[lang].live;
-  for(const k of ['water','air','none']){
-    db.ref('panels/'+k).on('value', s=>{ const v=s.val(); if(v){ Object.assign(S[k],v); render(); }});
-  }
-  db.ref('ambient').on('value', s=>{ const v=s.val(); if(v){ S.ambient = v.temperature ?? v; render(); }});
-  db.ref('battery').on('value', s=>{ const v=s.val(); if(v){ Object.assign(S.battery,v); render(); }});
-  db.ref('controls').on('value', s=>{ const v=s.val(); if(v){
-    if(typeof v.fan==='number'){ S.controls.fan=v.fan; $('fanSlider').value=v.fan; $('fanVal').textContent=v.fan+'%'; }
-    if(typeof v.pump==='number'){ S.controls.pump=v.pump; $('pumpSlider').value=v.pump; $('pumpVal').textContent=v.pump+'%'; }
-  }});
-  // charts still need history points: sample the live state every 2s
-  setInterval(()=>{ pushHist(); if(tempChart){ tempChart.update('none'); powerChart.update('none'); } }, 2000);
+  fetch(`${BACKEND.restUrl}/api/latest?deviceId=${BACKEND.deviceId}`)
+    .then(r=>r.json()).then(applyLive).catch(()=>{});
+  const open = ()=>{
+    ws = new WebSocket(BACKEND.wsUrl);
+    ws.onopen = ()=>{ $('modeDot').className='dot live'; $('modeText').textContent=T[lang].live; };
+    ws.onmessage = e=>{
+      let m; try{ m = JSON.parse(e.data); }catch{ return; }
+      if(m.deviceId && m.deviceId !== BACKEND.deviceId) return;
+      if(m.type === 'reading') applyLive(m);
+      if(m.type === 'command') setSliderUI(m.fan, m.pump);
+    };
+    ws.onclose = ()=>{
+      $('modeDot').className='dot demo';
+      $('modeText').textContent=T[lang].reconnecting;
+      setTimeout(open, 3000);
+    };
+  };
+  open();
 }
 
 /* ---------------- boot ---------------- */
 setInterval(()=>{ $('clock').textContent = new Date().toLocaleTimeString(); }, 1000);
 buildCharts(); bindControls(); applyLang();
-if(DEMO){ setInterval(simulate, 2000); simulate(); } else { connectFirebase(); }
+if(DEMO){ setInterval(simulate, 2000); simulate(); } else { connectBackend(); }
 </script>
 </body>
 </html>
