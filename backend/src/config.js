@@ -4,7 +4,7 @@
 module.exports = {
   port: parseInt(process.env.PORT || '8080', 10),
   mqtt: {
-    url: process.env.MQTT_URL || 'mqtt://broker.emqx.io:1883',
+    url: process.env.MQTT_URL || 'mqtt://broker.hivemq.com:1883',
     username: process.env.MQTT_USERNAME || undefined,
     password: process.env.MQTT_PASSWORD || undefined,
   },

@@ -43,7 +43,7 @@
 #define WIFI_PASSWORD  "YOUR_WIFI_PASSWORD"
 
 // Broker. Use mqtts (8883 + WiFiClientSecure) with a managed broker in production.
-#define MQTT_HOST      "broker.emqx.io"     // dev public broker; replace with your own
+#define MQTT_HOST      "broker.hivemq.com"     // dev public broker; replace with your own
 #define MQTT_PORT      1883
 #define MQTT_USER      ""                   // empty = anonymous
 #define MQTT_PASS      ""
