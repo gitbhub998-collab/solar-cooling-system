@@ -85,8 +85,7 @@ Readings payload — panel keys are free-form, so adding a panel is adding a key
 MQTT_PASSWORD=... OPERATOR_TOKEN=... COMMAND_KEY=... docker compose up
 ```
 
-Dashboard: open `index.html`, set `BACKEND.restUrl`, `BACKEND.wsUrl` and
-`BACKEND.operatorToken`. Full step-by-step in [docs/GO-LIVE.md](docs/GO-LIVE.md).
+Dashboard: open `index.html`, set `BACKEND.restUrl`, `BACKEND.wsUrl` only. Never put an operator credential in this public file. Full step-by-step in [docs/GO-LIVE.md](docs/GO-LIVE.md).
 
 ## Deploy for free
 
@@ -135,3 +134,6 @@ the demo.
 ---
 
 شرح الإعداد بالعربي في [README.ar.md](README.ar.md)
+
+
+Security: public live dashboard is read-only. Hardware control requires a trusted local/private interface, a server-only operator credential, and a network block on the public command route. No authenticated operator web interface is implemented yet. See docs/GO-LIVE.md.
