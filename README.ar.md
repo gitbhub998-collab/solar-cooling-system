@@ -69,7 +69,7 @@
 MQTT_PASSWORD=... OPERATOR_TOKEN=... COMMAND_KEY=... docker compose up
 ```
 
-الداشبورد: افتح `index.html` واملى `restUrl` و `wsUrl` و `operatorToken`.
+الداشبورد: افتح `index.html` واملى `restUrl` و `wsUrl` فقط، من غير أي بيانات دخول.
 الخطوات كاملة في [docs/GO-LIVE.md](docs/GO-LIVE.md).
 
 ## النشر مجانًا
@@ -112,3 +112,6 @@ Raspberry Pi بأمر `docker compose up`.
   والمخرجات متظبوطة على حد أقصى (`FAN_MAX_PCT` / `PUMP_MAX_PCT`).
 
 الوسطاء العموميين المفتوحين للتطوير المبدئي بس — أبدًا مش للعرض.
+
+
+الأمان: الداشبورد العامة للقراءة فقط. التحكم من واجهة محلية أو خاصة موثوقة، والتوكن في الخادم فقط، ومسار الأوامر ممنوع من الإنترنت. واجهة مشغل بتسجيل دخول حقيقي لسه مش متنفذة. شوف docs/GO-LIVE.md.
