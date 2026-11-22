@@ -148,7 +148,7 @@
         <label><span data-i18n="pump">💧 Water pump speed</span><b id="pumpVal">60%</b></label>
         <input type="range" id="pumpSlider" min="0" max="100" value="60">
       </div>
-      <div class="sub" style="margin-top:12px" data-i18n="ctrlNote">Sent through the backend over MQTT the moment you move them.</div>
+      <div class="sub" style="margin-top:12px" data-i18n="ctrlNote">Demo sliders only. Public live mode is read-only; hardware control stays private.</div>
     </div>
   </div>
 
@@ -178,8 +178,7 @@
 const BACKEND = {
   restUrl: "",    // e.g. "https://solarcool-backend.onrender.com"
   wsUrl: "",      // e.g. "wss://solarcool-backend.onrender.com/ws"
-  deviceId: "esp32-01",
-  operatorToken: ""   // must match OPERATOR_TOKEN on the backend; required to move the fan/pump
+  deviceId: "esp32-01" // Public live dashboard is read-only. Never add credentials here.
 };
 const DEMO = !BACKEND.restUrl;
 
@@ -190,7 +189,7 @@ const T = {
       power:"Power",voltage:"Voltage",current:"Current",gain:"Gain vs uncooled",ambient:"Ambient",
       battery:"Battery",charge:"charge",state:"State",charging:"Charging",discharging:"Discharging",full:"Full",
       controls:"Cooling controls",fan:"🌬️ Air fan speed",pump:"💧 Water pump speed",
-      ctrlNote:"Sent through the backend over MQTT the moment you move them.",
+      ctrlNote:"Demo sliders only. Public live mode is read-only; hardware control stays private.",
       tempChart:"Panel temperatures — live",powerChart:"Power output — live",
       cooler:"cooler than uncooled",demo:"DEMO DATA",live:"LIVE · MQTT",reconnecting:"RECONNECTING…",
       foot1:"Graduation project — solar panel cooling system (water / air / none).",
@@ -200,7 +199,7 @@ const T = {
       power:"القدرة",voltage:"الجهد",current:"التيار",gain:"الزيادة عن بدون تبريد",ambient:"حرارة الجو",
       battery:"البطارية",charge:"الشحن",state:"الحالة",charging:"بتشحن",discharging:"بتفرغ",full:"ممتلئة",
       controls:"التحكم في التبريد",fan:"🌬️ سرعة مروحة الهواء",pump:"💧 سرعة طلمبة المياه",
-      ctrlNote:"بتتبعت عن طريق الباك اند وMQTT أول ما تحركها.",
+      ctrlNote:"السلايدرز للمحاكاة بس. العرض الحقيقي للقراءة فقط والتحكم خاص بالمشغل.",
       tempChart:"درجات حرارة الألواح — لايف",powerChart:"القدرة الناتجة — لايف",
       cooler:"أبرد من بدون تبريد",demo:"بيانات تجريبية",live:"مباشر · MQTT",reconnecting:"بيحاول يتوصل…",
       foot1:"مشروع تخرج — نظام تبريد للألواح الشمسية (مياه / هواء / بدون).",
@@ -313,21 +312,18 @@ function buildCharts(){
 /* ---------------- controls ---------------- */
 let cmdTimer = null;
 function sendCommand(){
-  if(DEMO) return;
-  clearTimeout(cmdTimer);
-  cmdTimer = setTimeout(()=>{
-    fetch(BACKEND.restUrl + '/api/commands', {
-      method:'POST',
-      headers:{'Content-Type':'application/json', 'Authorization':'Bearer ' + BACKEND.operatorToken},
-      body: JSON.stringify({deviceId: BACKEND.deviceId, fan: S.controls.fan, pump: S.controls.pump})
-    }).catch(()=>{});
-  }, 250);   // debounce while dragging
+  // Demo sliders never send network commands. Public live mode is read-only.
+  return;
 }
 function setSliderUI(fan, pump){
   if(typeof fan==='number'){ S.controls.fan=fan; $('fanSlider').value=fan; $('fanVal').textContent=fan+'%'; }
   if(typeof pump==='number'){ S.controls.pump=pump; $('pumpSlider').value=pump; $('pumpVal').textContent=pump+'%'; }
 }
 function bindControls(){
+  if(!DEMO){
+    $('fanSlider').disabled = true; $('pumpSlider').disabled = true;
+    return;
+  }
   $('fanSlider').addEventListener('input', e=>{ setSliderUI(+e.target.value, undefined); sendCommand(); });
   $('pumpSlider').addEventListener('input', e=>{ setSliderUI(undefined, +e.target.value); sendCommand(); });
 }
