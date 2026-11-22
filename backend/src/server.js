@@ -76,7 +76,7 @@ app.get('/api/commands', async (req, res) => {
 // Read-only endpoints stay open; anything that can move hardware requires
 // the operator token when one is configured (always configure it outside dev).
 function requireOperator(req, res, next) {
-  if (!config.operatorToken) return next();   // dev mode, warned about at boot
+  if (!config.operatorToken) return res.status(503).json({ error: 'hardware controls disabled' });
   const token = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
   if (token !== config.operatorToken) {
     return res.status(401).json({ error: 'operator token required' });
@@ -124,7 +124,7 @@ mqttBridge.start(broadcast);
 server.listen(config.port, () => {
   console.log(`SolarCool backend on :${config.port} (db=${db.kind}, mqtt=${config.mqtt.url})`);
   if (!config.operatorToken) {
-    console.warn('WARNING: OPERATOR_TOKEN not set - /api/commands is unauthenticated (dev only)');
+    console.warn('WARNING: OPERATOR_TOKEN not set - /api/commands is disabled (fail closed)');
   }
   if (config.mqtt.url.startsWith('mqtt://') && !/localhost|127\.0\.0\.1/.test(config.mqtt.url)) {
     console.warn('WARNING: plaintext MQTT to a non-local broker - use mqtts:// in production');
